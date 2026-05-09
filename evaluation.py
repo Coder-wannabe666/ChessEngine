@@ -1,21 +1,22 @@
 import chess
 
+# Standard chess values in centipawns (1 pawn = 100)
 PIECE_VALUES = {
-    chess.PAWN: 10,
-    chess.KNIGHT: 30,
-    chess.BISHOP: 30,
-    chess.ROOK: 50,
-    chess.QUEEN: 90,
-    chess.KING: 9000
+    chess.PAWN: 100,
+    chess.KNIGHT: 300,
+    chess.BISHOP: 300,
+    chess.ROOK: 500,
+    chess.QUEEN: 900,
+    chess.KING: 90000
 }
 
 def evaluate_board(board):
     # Positive: White advantage, Negative: Black advantage
     if board.is_checkmate():
         if board.turn == chess.WHITE:
-            return -9999 # Black wins
+            return -99999 # Black wins
         else:
-            return 9999  # White wins
+            return 99999  # White wins
 
     if board.is_stalemate() or board.is_insufficient_material():
         return 0 # Draw
