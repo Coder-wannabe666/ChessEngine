@@ -8,7 +8,7 @@ from model import ChessNet
 def train_model():
     # Hyperparameters
     batch_size = 512
-    learning_rate = 0.001
+    learning_rate = 0.0005
     epochs = 10
     dataset_path = "dataset.pt"
     model_save_path = "chess_model.pth"
@@ -24,8 +24,9 @@ def train_model():
 
     # Initialize model, loss function, and optimizer
     model = ChessNet().to(device)
-    criterion = nn.MSELoss() # Mean Squared Error for evaluation scores
+    criterion = nn.HuberLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1, factor=0.5, verbose=True)
 
     print("Starting training...")
     for epoch in range(epochs):

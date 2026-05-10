@@ -5,10 +5,11 @@ import numpy as np
 import os
 import zstandard as zstd
 import io
+import random
 
 from encoder import board_to_tensor
 
-MAX_GAMES = 1000
+MAX_GAMES = 10000
 
 class ChessDataset(Dataset):
     """
@@ -27,27 +28,40 @@ class ChessDataset(Dataset):
     def __getitem__(self, idx):
         return self.inputs[idx], self.labels[idx]
 
-def process_zst_to_tensors(zst_path, output_path, max_games=MAX_GAMES):
+def process_zst_to_tensors(zst_path, output_path, max_games=10000, keep_prob=0.05):
     """
-    Reads a ZST compressed PGN file on the fly, plays through the games,
-    converts positions to tensors, and saves them to a PyTorch .pt file.
+    Reads a ZST compressed PGN file on the fly.
+    Probabilistically skips games to ensure a wide, random sample of the dataset.
     """
     if not os.path.exists(zst_path):
         print(f"Error: ZST file not found at {zst_path}")
         return
 
     print(f"Processing compressed file {zst_path}...")
+    print(f"Target: {max_games} games. Keep probability: {keep_prob*100}%")
+
     inputs = []
     labels = []
 
-    # Open the compressed file and stream it directly
     with open(zst_path, "rb") as compressed_file:
         dctx = zstd.ZstdDecompressor()
         with dctx.stream_reader(compressed_file) as reader:
             text_stream = io.TextIOWrapper(reader, encoding='utf-8')
 
             games_processed = 0
+            games_scanned = 0
+
             while games_processed < max_games:
+                games_scanned += 1
+
+                # Roll the dice: should we keep this game or skip it?
+                if random.random() > keep_prob:
+                    # Fast-forward without parsing moves
+                    if not chess.pgn.skip_game(text_stream):
+                        break # End of file
+                    continue
+
+                # If we passed the random check, fully read the game
                 game = chess.pgn.read_game(text_stream)
                 if game is None:
                     break # End of file
@@ -60,7 +74,7 @@ def process_zst_to_tensors(zst_path, output_path, max_games=MAX_GAMES):
                 elif result == "1/2-1/2":
                     label = 0.0
                 else:
-                    continue
+                    continue # Ignore aborted games
 
                 board = game.board()
                 for move in game.mainline_moves():
@@ -70,8 +84,8 @@ def process_zst_to_tensors(zst_path, output_path, max_games=MAX_GAMES):
                     labels.append(torch.tensor([label], dtype=torch.float32))
 
                 games_processed += 1
-                if games_processed % 100 == 0:
-                    print(f"Processed {games_processed} games...")
+                if games_processed % 500 == 0:
+                    print(f"Processed {games_processed}/{max_games} games (scanned through ~{games_scanned} total)...")
 
     print(f"Finished parsing. Total positions extracted: {len(inputs)}")
     print("Stacking tensors into batches... this might take a moment.")
@@ -86,5 +100,5 @@ if __name__ == "__main__":
     zst_file = "games.pgn.zst"
     output_file = "dataset.pt"
 
-
-    process_zst_to_tensors(zst_file, output_file, max_games=MAX_GAMES)
+    # We now target 10000 games, keeping roughly 5% of what we scan
+    process_zst_to_tensors(zst_file, output_file, max_games=MAX_GAMES, keep_prob=0.05)
