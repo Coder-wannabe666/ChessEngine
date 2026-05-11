@@ -8,8 +8,9 @@ from evaluation import evaluate_board as classical_eval
 
 # --- Configuration & Tuning ---
 DEPTH = 4
-AI_WEIGHT = 0.15
-AI_MULTIPLIER = 120
+AI_WEIGHT = 0.2      # Balance between classical math and NN intuition
+AI_MULTIPLIER = 120   # Scaling factor for the NN output
+SEARCH_ID = 0
 
 # --- Global Caches & Counters ---
 TRANSPOSITION_TABLE = {}
@@ -22,77 +23,51 @@ PIECE_VALUES = {
 }
 
 # --- Neural Network Setup ---
-device = torch.device("cpu")
-model = ChessNet()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = ChessNet().to(device)
 model.load_state_dict(torch.load("nn/chess_model.pth", map_location=device, weights_only=True))
 model.eval()
 
-@lru_cache(maxsize=50000)
+@lru_cache(maxsize=100000)
 def get_ai_score(fen):
-    """Deep intuition - only called at the end of the main search."""
+    """Deep intuition - now running on GPU for speed."""
     board = chess.Board(fen)
     tensor = board_to_tensor(board).unsqueeze(0).to(device)
     with torch.no_grad():
         return model(tensor).item() * AI_MULTIPLIER
 
-def fast_eval(board, current_depth, use_ai=False):
-    """Evaluation including mate distance penalties."""
-    # Checkmate detection (with distance penalty)
+def fast_eval(board, current_depth):
+    """Pure classical evaluation used for speed."""
     if board.is_checkmate():
-        if board.turn == chess.WHITE:
-            return -99999 + current_depth
-        else:
-            return 99999 - current_depth
-
-    if board.is_stalemate():
+        return -99999 + current_depth if board.turn == chess.WHITE else 99999 - current_depth
+    if board.is_stalemate() or board.is_insufficient_material():
         return 0
 
-    score = classical_eval(board)
-
-    if use_ai:
-        ai_intuition = get_ai_score(board.fen())
-        score = (score * (1 - AI_WEIGHT)) + (ai_intuition * AI_WEIGHT)
-
-    return score
+    return classical_eval(board)
 
 def move_value(board, move, current_depth):
-    """Assigns a value to a move for sorting (MVV-LVA and Killer Moves)."""
+    """Sorts moves: Captures first (MVV-LVA), then Killer Moves."""
     if board.is_capture(move):
         victim = board.piece_at(move.to_square)
         attacker = board.piece_at(move.from_square)
-
-        victim_val = PIECE_VALUES.get(victim.piece_type, 0) if victim else 0
-        attacker_val = PIECE_VALUES.get(attacker.piece_type, 0) if attacker else 0
-
-        if board.is_en_passant(move):
-            victim_val = PIECE_VALUES[chess.PAWN]
-
-        return 10000 + victim_val - attacker_val
-
+        v_val = PIECE_VALUES.get(victim.piece_type, 0) if victim else 0
+        a_val = PIECE_VALUES.get(attacker.piece_type, 0) if attacker else 0
+        return 10000 + v_val - a_val
     if move in KILLER_MOVES[current_depth]:
         return 5000
-
     return 0
 
 def quiescence(board, alpha, beta, maximizing, current_depth, q_depth=0):
-    """Fast tactical search evaluating only captures."""
+    """Fast tactical search. NO AI calls here to maintain high NPS."""
     global NODES_COUNT
     NODES_COUNT += 1
 
-    # STRICT DRAW DETECTION BEFORE ANYTHING ELSE
-    if board.is_repetition(2) or board.is_fifty_moves() or board.is_insufficient_material():
-        return 0
-
-    stand_pat = fast_eval(board, current_depth, use_ai=False)
-
-    # HARD LIMIT to prevent infinite CPU loops
-    if q_depth >= 4:
-        return stand_pat
+    stand_pat = fast_eval(board, current_depth)
+    if q_depth >= 4: return stand_pat
 
     if maximizing:
         if stand_pat >= beta: return beta
         alpha = max(alpha, stand_pat)
-
         for move in sorted(board.legal_moves, key=lambda m: board.is_capture(m), reverse=True):
             if board.is_capture(move):
                 board.push(move)
@@ -103,7 +78,6 @@ def quiescence(board, alpha, beta, maximizing, current_depth, q_depth=0):
     else:
         if stand_pat <= alpha: return alpha
         beta = min(beta, stand_pat)
-
         for move in sorted(board.legal_moves, key=lambda m: board.is_capture(m), reverse=True):
             if board.is_capture(move):
                 board.push(move)
@@ -112,33 +86,37 @@ def quiescence(board, alpha, beta, maximizing, current_depth, q_depth=0):
                 if beta <= alpha: break
         return beta
 
-def minimax(board, depth, alpha, beta, maximizing, current_depth):
-    """Main Alpha-Beta search with Transposition Table."""
+def minimax(board, depth, alpha, beta, maximizing, current_depth, original_id):
+    """Main Alpha-Beta search. AI is only called at the leaf nodes."""
     global NODES_COUNT
+    if original_id != SEARCH_ID:
+        return 0
+
     NODES_COUNT += 1
 
-    # 1. STRICT DRAW DETECTION BEFORE CHECKING MEMORY!
-    # Using is_repetition(2) forces the engine to push forward instead of looping
-    if current_depth > 0 and (board.is_repetition(2) or board.is_fifty_moves() or board.is_insufficient_material()):
+    if current_depth > 0 and (board.is_repetition(2) or board.is_fifty_moves()):
         return 0
 
     board_hash = chess.polyglot.zobrist_hash(board)
-
-    # 2. Check Transposition Table
     if board_hash in TRANSPOSITION_TABLE:
         stored_depth, stored_eval = TRANSPOSITION_TABLE[board_hash]
-        if stored_depth >= depth:
-            return stored_eval
+        if stored_depth >= depth: return stored_eval
 
+    # REACHED LEAF NODE: Combine classical tactics with NN intuition
     if depth == 0 or board.is_game_over():
-        return quiescence(board, alpha, beta, maximizing, current_depth, 0)
+        # Get tactical score from captures
+        q_score = quiescence(board, alpha, beta, maximizing, current_depth)
+        # Get strategic intuition from your trained model
+        ai_score = get_ai_score(board.fen())
+        # Blend them based on defined weight
+        return (q_score * (1 - AI_WEIGHT)) + (ai_score * AI_WEIGHT)
 
     legal_moves = sorted(board.legal_moves, key=lambda m: move_value(board, m, current_depth), reverse=True)
     best_val = -float('inf') if maximizing else float('inf')
 
     for move in legal_moves:
         board.push(move)
-        res = minimax(board, depth - 1, alpha, beta, not maximizing, current_depth + 1)
+        res = minimax(board, depth - 1, alpha, beta, not maximizing, current_depth + 1, original_id)
         board.pop()
 
         if maximizing:
@@ -157,8 +135,7 @@ def minimax(board, depth, alpha, beta, maximizing, current_depth):
     TRANSPOSITION_TABLE[board_hash] = (depth, best_val)
     return best_val
 
-# CHANGED: Default book_path is now komodo.bin
-def get_book_moves(board, count=3, book_path="komodo.bin"):
+def get_book_moves(board, count=3, book_path="gm2001.bin"):
     """Finds multiple popular moves from the Polyglot opening book."""
     moves = []
     try:
@@ -172,9 +149,12 @@ def get_book_moves(board, count=3, book_path="komodo.bin"):
     return moves
 
 def get_top_moves(board, depth, count=3):
-    """Main entry point. Checks book first, then searches."""
-    global NODES_COUNT
+    """Main entry point. Checks book first, then uses AI and search."""
+    global NODES_COUNT, SEARCH_ID
+    SEARCH_ID += 1
+    current_id = SEARCH_ID
     NODES_COUNT = 0
+
 
     book_moves = get_book_moves(board, count)
     if book_moves:
@@ -186,17 +166,12 @@ def get_top_moves(board, depth, count=3):
             static_score = classical_eval(board)
             board.pop()
 
+
             bonus = (3 - i) * 0.05
-
-            if is_max:
-                final_score = static_score + bonus
-            else:
-                final_score = static_score - bonus
-
+            final_score = static_score + bonus if is_max else static_score - bonus
             results.append((final_score, move))
 
         results.sort(key=lambda x: x[0], reverse=is_max)
-        print("Book moves found!")
         return results
 
     is_max = board.turn == chess.WHITE
@@ -207,13 +182,12 @@ def get_top_moves(board, depth, count=3):
         results = []
         for move in sorted(legal_moves, key=lambda m: move_value(board, m, 0), reverse=True):
             board.push(move)
-            val = minimax(board, d - 1, -float('inf'), float('inf'), not is_max, 1)
+            val = minimax(board, d - 1, -float('inf'), float('inf'), not is_max, 1, current_id)
             board.pop()
             results.append((val, move))
 
         results.sort(key=lambda x: x[0], reverse=is_max)
         legal_moves = [r[1] for r in results]
-
-        print(f"Depth {d} complete. Nodes searched: {NODES_COUNT}")
+        print(f"Depth {d} complete. Nodes: {NODES_COUNT}")
 
     return results[:count]

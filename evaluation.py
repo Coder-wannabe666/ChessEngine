@@ -15,6 +15,17 @@ PAWN_PST = [
      0,  0,  0,  0,  0,  0,  0,  0
 ]
 
+PAWN_ENDGAME_PST = [
+     0,   0,   0,   0,   0,   0,   0,   0,
+    140, 140, 140, 140, 140, 140, 140, 140,
+     90,  90,  90,  90,  90,  90,  90,  90,
+     60,  60,  60,  60,  60,  60,  60,  60,
+     40,  40,  40,  40,  40,  40,  40,  40,
+     20,  20,  20,  20,  20,  20,  20,  20,
+      0,   0,   0,   0,   0,   0,   0,   0,
+      0,   0,   0,   0,   0,   0,   0,   0
+]
+
 KNIGHT_PST = [
     -50,-40,-30,-30,-30,-30,-40,-50,
     -40,-20,  0,  0,  0,  0,-20,-40,
@@ -89,8 +100,9 @@ def is_endgame(board):
 
 def get_pst_value(piece_type, square, color, board):
     """Gets the positional bonus, mapping standard visual arrays correctly."""
+    endgame = is_endgame(board)
     tables = {
-        chess.PAWN: PAWN_PST,
+        chess.PAWN: PAWN_ENDGAME_PST if endgame else PAWN_PST,
         chess.KNIGHT: KNIGHT_PST,
         chess.BISHOP: BISHOP_PST,
         chess.ROOK: ROOK_PST,

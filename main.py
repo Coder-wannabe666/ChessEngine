@@ -330,6 +330,9 @@ def main():
                                 if move in board.legal_moves:
                                     board.push(move)
                                     selected_square = None
+                                    executor.shutdown(wait=False, cancel_futures=True) # we kill the queue to not wait for past moves
+                                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                                    is_calculating = False
                                     needs_eval = True
                                     top_moves = []
                                 else:
