@@ -1,6 +1,7 @@
 import pygame
 import chess
 import sys
+import os
 import concurrent.futures
 from search import get_top_moves
 
@@ -211,6 +212,7 @@ def get_promotion_choice(screen):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 sys.exit()
+                os._exit(0)
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q: return chess.QUEEN
                 if event.key == pygame.K_r: return chess.ROOK
