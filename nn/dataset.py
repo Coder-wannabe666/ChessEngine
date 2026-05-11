@@ -6,14 +6,16 @@ import os
 import zstandard as zstd
 import io
 import random
+import math
 
 from encoder import board_to_tensor
 
-MAX_GAMES = 10000
+# Increased for overnight training
+MAX_GAMES = 100000
 
 class ChessDataset(Dataset):
     """
-    PyTorch Dataset class to load our pre-processed chess positions.
+    PyTorch Dataset class to load pre-processed chess positions.
     """
     def __init__(self, data_file):
         print(f"Loading data from {data_file}...")
@@ -30,8 +32,7 @@ class ChessDataset(Dataset):
 
 def process_zst_to_tensors(zst_path, output_path, max_games=10000, keep_prob=0.05):
     """
-    Reads a ZST compressed PGN file on the fly.
-    Probabilistically skips games to ensure a wide, random sample of the dataset.
+    Reads a ZST compressed PGN and extracts engine evaluations.
     """
     if not os.path.exists(zst_path):
         print(f"Error: ZST file not found at {zst_path}")
@@ -54,42 +55,39 @@ def process_zst_to_tensors(zst_path, output_path, max_games=10000, keep_prob=0.0
             while games_processed < max_games:
                 games_scanned += 1
 
-                # Roll the dice: should we keep this game or skip it?
+                # Randomly skip games to diversify dataset
                 if random.random() > keep_prob:
-                    # Fast-forward without parsing moves
                     if not chess.pgn.skip_game(text_stream):
-                        break # End of file
+                        break
                     continue
 
-                # If we passed the random check, fully read the game
                 game = chess.pgn.read_game(text_stream)
                 if game is None:
-                    break # End of file
-
-                result = game.headers.get("Result")
-                if result == "1-0":
-                    label = 1.0
-                elif result == "0-1":
-                    label = -1.0
-                elif result == "1/2-1/2":
-                    label = 0.0
-                else:
-                    continue # Ignore aborted games
+                    break
 
                 board = game.board()
-                for move in game.mainline_moves():
-                    board.push(move)
-                    tensor = board_to_tensor(board)
-                    inputs.append(tensor)
-                    labels.append(torch.tensor([label], dtype=torch.float32))
+
+                # Iterate through moves and extract [%eval] tags
+                for node in game.mainline():
+                    board.push(node.move)
+
+                    eval_score = node.eval()
+                    if eval_score is not None:
+                        # Normalize score (mate = 100 pawns)
+                        score = eval_score.white().score(mate_score=10000) / 100.0
+
+                        # Compress to [-1, 1] range using tanh
+                        label = math.tanh(score / 4.0)
+
+                        tensor = board_to_tensor(board)
+                        inputs.append(tensor)
+                        labels.append(torch.tensor([label], dtype=torch.float32))
 
                 games_processed += 1
                 if games_processed % 500 == 0:
-                    print(f"Processed {games_processed}/{max_games} games (scanned through ~{games_scanned} total)...")
+                    print(f"Processed {games_processed}/{max_games} games...")
 
-    print(f"Finished parsing. Total positions extracted: {len(inputs)}")
-    print("Stacking tensors into batches... this might take a moment.")
-
+    print(f"Stacking {len(inputs)} positions...")
     X = torch.stack(inputs)
     y = torch.stack(labels)
 
@@ -100,5 +98,4 @@ if __name__ == "__main__":
     zst_file = "games.pgn.zst"
     output_file = "dataset.pt"
 
-    # We now target 10000 games, keeping roughly 5% of what we scan
-    process_zst_to_tensors(zst_file, output_file, max_games=MAX_GAMES, keep_prob=0.05)
+    process_zst_to_tensors(zst_file, output_file, max_games=MAX_GAMES, keep_prob=0.2)
