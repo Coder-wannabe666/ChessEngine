@@ -11,7 +11,7 @@ WIDTH       = BOARD_AREA + PANEL_WIDTH
 HEIGHT      = BOARD_AREA
 DIMENSION   = 8
 SQ_SIZE     = BOARD_SIZE // DIMENSION
-DEPTH       = 4
+DEPTH       = 5
 
 # Colors
 C_BG         = ( 10,  10,  17)
@@ -40,15 +40,16 @@ C_BTN        = ( 28,  26,  44)
 C_BTN_BDR    = ( 52,  50,  78)
 C_BTN_EDIT   = ( 36,  18,  18)
 C_WARN       = (220, 100,  50)
+C_PV_BG      = ( 18,  16,  30)   # PV line background
+C_PV_MOVE    = (180, 160, 220)   # PV move text colour
 
 IMAGES = {}
 
 def load_images():
-    # Load and scale pieces
     pieces = ['p', 'n', 'b', 'r', 'q', 'k', 'P', 'N', 'B', 'R', 'Q', 'K']
     try:
         for piece in pieces:
-            color = 'w' if piece.isupper() else 'b'
+            color    = 'w' if piece.isupper() else 'b'
             filename = f"Images/{color}{piece.upper()}.png"
             IMAGES[piece] = pygame.transform.smoothscale(
                 pygame.image.load(filename), (SQ_SIZE, SQ_SIZE)
@@ -58,7 +59,6 @@ def load_images():
         sys.exit()
 
 def get_screen_pos(square, flipped):
-    # Convert chess square to screen coords
     rank = chess.square_rank(square)
     file = chess.square_file(square)
     if flipped:
@@ -68,8 +68,7 @@ def get_screen_pos(square, flipped):
     return (BOARD_PAD + draw_col * SQ_SIZE, BOARD_PAD + draw_row * SQ_SIZE)
 
 def get_square_from_pos(pos, flipped):
-    # Convert screen coords to chess square
-    x, y = pos
+    x, y   = pos
     bx, by = x - BOARD_PAD, y - BOARD_PAD
     if bx < 0 or bx >= BOARD_SIZE or by < 0 or by >= BOARD_SIZE:
         return None
@@ -81,20 +80,19 @@ def get_square_from_pos(pos, flipped):
     return chess.square(file, rank)
 
 def is_light_square(square):
-    # Check if square is light colored
     return (chess.square_rank(square) + chess.square_file(square)) % 2 == 1
 
 def draw_board(screen, board, last_move, flipped):
-    # Fill background and draw borders
     screen.fill(C_BG)
     pygame.draw.rect(screen, C_FRAME, (0, 0, BOARD_AREA, HEIGHT))
-    pygame.draw.rect(screen, C_FRAME_LINE, (BOARD_PAD - 3, BOARD_PAD - 3, BOARD_SIZE + 6, BOARD_SIZE + 6), 2)
-    pygame.draw.rect(screen, C_FRAME_IN, (BOARD_PAD - 1, BOARD_PAD - 1, BOARD_SIZE + 2, BOARD_SIZE + 2), 1)
+    pygame.draw.rect(screen, C_FRAME_LINE,
+                     (BOARD_PAD - 3, BOARD_PAD - 3, BOARD_SIZE + 6, BOARD_SIZE + 6), 2)
+    pygame.draw.rect(screen, C_FRAME_IN,
+                     (BOARD_PAD - 1, BOARD_PAD - 1, BOARD_SIZE + 2, BOARD_SIZE + 2), 1)
 
     last_from = last_move.from_square if last_move else None
     last_to   = last_move.to_square   if last_move else None
 
-    # Render squares
     for sq in chess.SQUARES:
         light = is_light_square(sq)
         if sq in (last_from, last_to):
@@ -105,44 +103,39 @@ def draw_board(screen, board, last_move, flipped):
         pygame.draw.rect(screen, color, (x, y, SQ_SIZE, SQ_SIZE))
 
 def draw_coordinates(screen, font, flipped):
-    # Draw rank and file labels
     for i in range(DIMENSION):
         actual_rank = i if flipped else 7 - i
-        label = str(actual_rank + 1)
-        light_sq = (actual_rank + 0) % 2 == 1
-        color = C_SQ_DARK if light_sq else C_SQ_LIGHT
-        surf = font.render(label, True, color)
+        label       = str(actual_rank + 1)
+        light_sq    = (actual_rank + 0) % 2 == 1
+        color       = C_SQ_DARK if light_sq else C_SQ_LIGHT
+        surf        = font.render(label, True, color)
         screen.blit(surf, (BOARD_PAD + 3, BOARD_PAD + i * SQ_SIZE + 4))
 
         actual_file = 7 - i if flipped else i
-        label = chr(ord('a') + actual_file)
-        light_sq = (0 + actual_file) % 2 == 1
-        color = C_SQ_DARK if light_sq else C_SQ_LIGHT
-        surf = font.render(label, True, color)
-        screen.blit(surf,
-                    (BOARD_PAD + i * SQ_SIZE + SQ_SIZE - surf.get_width() - 4,
-                     BOARD_PAD + BOARD_SIZE - surf.get_height() - 3))
+        label       = chr(ord('a') + actual_file)
+        light_sq    = (0 + actual_file) % 2 == 1
+        color       = C_SQ_DARK if light_sq else C_SQ_LIGHT
+        surf        = font.render(label, True, color)
+        screen.blit(surf, (BOARD_PAD + i * SQ_SIZE + SQ_SIZE - surf.get_width() - 4,
+                           BOARD_PAD + BOARD_SIZE - surf.get_height() - 3))
 
 def draw_highlight(screen, square, flipped):
-    # Draw selection highlight
     if square is None: return
     x, y = get_screen_pos(square, flipped)
-    hl = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
+    hl   = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
     hl.fill((*C_SELECT, 160))
     screen.blit(hl, (x, y))
 
 def draw_check(screen, board, flipped):
-    # Highlight king in check
     if not board.is_check(): return
     king_sq = board.king(board.turn)
     if king_sq is None: return
     x, y = get_screen_pos(king_sq, flipped)
-    ov = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
+    ov   = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
     ov.fill((*C_CHECK, 140))
     screen.blit(ov, (x, y))
 
 def draw_legal_moves(screen, board, selected_square, flipped):
-    # Show legal moves for selected piece
     if selected_square is None: return
     dot_surf = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
     for move in board.legal_moves:
@@ -158,7 +151,6 @@ def draw_legal_moves(screen, board, selected_square, flipped):
         screen.blit(dot_surf, (x, y))
 
 def draw_pieces(screen, board, flipped):
-    # Draw all pieces
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece:
@@ -166,38 +158,112 @@ def draw_pieces(screen, board, flipped):
             screen.blit(IMAGES[piece.symbol()], (x, y))
 
 def draw_divider(screen, y, px, pw):
-    # Draw horizontal line
     pygame.draw.line(screen, C_DIVIDER, (px + 16, y), (px + pw - 16, y), 1)
 
 def eval_color(score_cp):
-    # Get color based on eval score
     if   score_cp >  25: return C_EVAL_POS
     elif score_cp < -25: return C_EVAL_NEG
     else:                return C_EVAL_ZERO
 
 def draw_eval_bar(screen, px, y, pw, score_cp):
-    # Render eval bar visualization
-    BAR_H    = 8
-    BAR_W    = pw - 32
-    bar_x    = px + 16
-    clamped  = max(-600, min(600, score_cp))
-    white_w  = int((clamped + 600) / 1200 * BAR_W)
-    black_w  = BAR_W - white_w
+    BAR_H   = 8
+    BAR_W   = pw - 32
+    bar_x   = px + 16
+    clamped = max(-600, min(600, score_cp))
+    white_w = int((clamped + 600) / 1200 * BAR_W)
+    black_w = BAR_W - white_w
 
-    pygame.draw.rect(screen, C_DIVIDER, (bar_x, y, BAR_W, BAR_H), border_radius=4)
+    pygame.draw.rect(screen, C_DIVIDER,       (bar_x, y, BAR_W,   BAR_H), border_radius=4)
     if black_w > 0:
-        pygame.draw.rect(screen, ( 36,  34,  52), (bar_x, y, black_w, BAR_H), border_radius=4)
+        pygame.draw.rect(screen, ( 36, 34, 52), (bar_x, y, black_w, BAR_H), border_radius=4)
     if white_w > 0:
-        pygame.draw.rect(screen, (220, 218, 208), (bar_x + black_w, y, white_w, BAR_H), border_radius=4)
+        pygame.draw.rect(screen, (220, 218, 208),
+                         (bar_x + black_w, y, white_w, BAR_H), border_radius=4)
 
     mid = bar_x + BAR_W // 2
     pygame.draw.line(screen, C_BG, (mid, y), (mid, y + BAR_H), 1)
     return BAR_H + 6
 
-def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, selected_edit_piece):
-    # Main sidebar logic
-    px = BOARD_AREA
-    pw = PANEL_WIDTH
+
+def draw_pv_line(screen, fonts, board, pv_line, px, pw, cy):
+    """
+    Renders the Principal Variation (best continuation) below the top moves.
+    Shows moves as SAN, alternating move numbers for readability.
+    Returns the new cy after drawing.
+    """
+    if not pv_line:
+        return cy
+
+    draw_divider(screen, cy, px, pw)
+    cy += 10
+
+    lbl = fonts['tiny'].render("BEST LINE", True, C_TEXT_DIM)
+    screen.blit(lbl, (px + 20, cy))
+    cy += lbl.get_height() + 6
+
+    # Build the PV text: "1. e4  e5  2. Nf3  Nc6  ..."
+    temp     = board.copy()
+    pv_parts = []
+    move_num = temp.fullmove_number
+    is_black_first = (temp.turn == chess.BLACK)
+
+    for i, move in enumerate(pv_line):
+        try:
+            san = temp.san(move)
+        except Exception:
+            san = move.uci()
+
+        if temp.turn == chess.WHITE:
+            pv_parts.append(f"{move_num}.")
+            pv_parts.append(san)
+            move_num += 1
+        else:
+            if i == 0 and is_black_first:
+                pv_parts.append(f"{move_num}...")
+            pv_parts.append(san)
+
+        try:
+            temp.push(move)
+        except Exception:
+            break
+
+    pv_text = "  ".join(pv_parts)
+
+    # Word-wrap across available width
+    max_w     = pw - 36
+    words     = pv_text.split("  ")
+    line_surf = fonts['tiny']
+    lines     = []
+    current   = ""
+
+    for word in words:
+        test = (current + "  " + word).strip()
+        if line_surf.size(test)[0] <= max_w:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+
+    # Render with background pill
+    box_h  = len(lines) * (line_surf.get_height() + 3) + 10
+    pygame.draw.rect(screen, C_PV_BG, (px + 14, cy, pw - 28, box_h), border_radius=6)
+
+    for line in lines:
+        surf = line_surf.render(line, True, C_PV_MOVE)
+        screen.blit(surf, (px + 22, cy + 5))
+        cy += line_surf.get_height() + 3
+
+    cy += 12
+    return cy
+
+
+def draw_sidebar(screen, fonts, top_moves, is_calculating, board,
+                 edit_mode, selected_edit_piece, pv_line=None):
+    px            = BOARD_AREA
+    pw            = PANEL_WIDTH
     palette_rects = {}
 
     pygame.draw.rect(screen, C_PANEL, (px, 0, pw, HEIGHT))
@@ -217,23 +283,23 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, sel
 
     cy = hdr_h + 14
 
-    # New prominent turn indicator
+    # Turn indicator
     turn_str = "WHITE TO MOVE" if board.turn == chess.WHITE else "BLACK TO MOVE"
     turn_bg  = (240, 240, 240) if board.turn == chess.WHITE else (25, 25, 25)
-    turn_fg  = (10, 10, 10) if board.turn == chess.WHITE else (240, 240, 240)
+    turn_fg  = (10,  10,  10)  if board.turn == chess.WHITE else (240, 240, 240)
 
-    pygame.draw.rect(screen, turn_bg, (px + 16, cy, pw - 32, 34), border_radius=6)
-    pygame.draw.rect(screen, C_GOLD_DIM if board.turn == chess.BLACK else turn_bg, (px + 16, cy, pw - 32, 34), 1, border_radius=6)
-
+    pygame.draw.rect(screen, turn_bg,    (px + 16, cy, pw - 32, 34), border_radius=6)
+    pygame.draw.rect(screen, C_GOLD_DIM if board.turn == chess.BLACK else turn_bg,
+                     (px + 16, cy, pw - 32, 34), 1, border_radius=6)
     t_surf = fonts['title'].render(turn_str, True, turn_fg)
-    screen.blit(t_surf, (px + 16 + (pw - 32 - t_surf.get_width()) // 2, cy + (34 - t_surf.get_height()) // 2))
+    screen.blit(t_surf, (px + 16 + (pw - 32 - t_surf.get_width()) // 2,
+                         cy + (34 - t_surf.get_height()) // 2))
     cy += 34 + 14
 
     draw_divider(screen, cy, px, pw)
     cy += 12
 
     if edit_mode:
-        # Editor layout
         for text in ["[C] Clear board", "[R] Reset to start", "[T] Toggle side to move"]:
             s = fonts['info'].render(text, True, C_TEXT_DIM)
             screen.blit(s, (px + 20, cy))
@@ -251,7 +317,6 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, sel
         black_pieces = ['p', 'n', 'b', 'r', 'q', 'k']
         sq = 40
 
-        # Draw piece palette
         for row, pieces in enumerate((white_pieces, black_pieces)):
             for i, p in enumerate(pieces):
                 rx = px + 18 + i * (sq + 6)
@@ -262,14 +327,11 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, sel
                 pygame.draw.rect(screen, bd, (rx, ry, sq, sq), 1, border_radius=6)
                 img = pygame.transform.smoothscale(IMAGES[p], (sq - 4, sq - 4))
                 screen.blit(img, (rx + 2, ry + 2))
-
-                # Store active rects
                 palette_rects[p] = pygame.Rect(rx, ry, sq, sq)
 
         cy += 2 * (sq + 8) + 14
 
     else:
-        # Analysis layout
         if not board.is_valid():
             warn = fonts['info'].render("⚠  Invalid position", True, C_WARN)
             screen.blit(warn, (px + 20, cy))
@@ -280,7 +342,7 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, sel
             screen.blit(calc, (px + 20, cy))
             cy += calc.get_height() + 8
             ticks = (pygame.time.get_ticks() // 400) % 4
-            dots = fonts['title'].render("●" * ticks + "○" * (3 - ticks), True, C_GOLD_DIM)
+            dots  = fonts['title'].render("●" * ticks + "○" * (3 - ticks), True, C_GOLD_DIM)
             screen.blit(dots, (px + 20, cy))
             cy += dots.get_height() + 8
 
@@ -292,10 +354,9 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, sel
                 eval_str = "Forced Mate"
                 e_col    = C_EVAL_POS if top_score > 0 else C_EVAL_NEG
             else:
-                cp = top_score / 100
-                sign = "+" if cp >= 0 else ""
-                eval_str = f"{sign}{cp:.2f}"
-                e_col = eval_color(top_score)
+                cp       = top_score / 100
+                eval_str = f"{'+' if cp >= 0 else ''}{cp:.2f}"
+                e_col    = eval_color(top_score)
 
             eval_surf = fonts['eval'].render(eval_str, True, e_col)
             screen.blit(eval_surf, (px + pw - eval_surf.get_width() - 18, cy))
@@ -307,10 +368,9 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, sel
             screen.blit(lbl, (px + 20, cy))
             cy += lbl.get_height() + 10
 
-            # Render top engine moves
             for i, (score, move) in enumerate(top_moves):
-                try: move_san = board.san(move)
-                except Exception: move_san = move.uci()
+                try:    move_san = board.san(move)
+                except: move_san = move.uci()
 
                 card_h = 52
                 card_x = px + 14
@@ -323,35 +383,43 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, sel
                     pygame.draw.rect(screen, C_GOLD, (card_x, card_y, card_w, card_h), 1, border_radius=8)
 
                 badge_col = C_GOLD if i == 0 else C_BTN_BDR
-                bx, bcy = card_x + 18, card_y + card_h // 2
+                bx, bcy   = card_x + 18, card_y + card_h // 2
                 pygame.draw.circle(screen, badge_col, (bx, bcy), 14)
-                n_surf = fonts['badge'].render(str(i + 1), True, C_PANEL if i == 0 else C_TEXT_DIM)
-                screen.blit(n_surf, (bx - n_surf.get_width() // 2, bcy - n_surf.get_height() // 2))
+                n_surf = fonts['badge'].render(str(i + 1), True,
+                                               C_PANEL if i == 0 else C_TEXT_DIM)
+                screen.blit(n_surf, (bx - n_surf.get_width() // 2,
+                                     bcy - n_surf.get_height() // 2))
 
-                m_surf = fonts['move'].render(move_san, True, C_TEXT if i == 0 else C_TEXT_DIM)
+                m_surf = fonts['move'].render(move_san, True,
+                                              C_TEXT if i == 0 else C_TEXT_DIM)
                 screen.blit(m_surf, (card_x + 40, card_y + 8))
 
                 if abs(score) >= 90000:
                     sc_str = "Mate"
                     sc_col = C_EVAL_POS if score > 0 else C_EVAL_NEG
                 else:
-                    cp = score / 100
+                    cp     = score / 100
                     sc_str = f"{'+' if cp >= 0 else ''}{cp:.2f}"
                     sc_col = eval_color(score)
 
                 sc_surf = fonts['move'].render(sc_str, True, sc_col)
-                screen.blit(sc_surf, (card_x + 40, card_y + card_h - sc_surf.get_height() - 8))
+                screen.blit(sc_surf, (card_x + 40,
+                                      card_y + card_h - sc_surf.get_height() - 8))
 
                 mini_w = card_w - 100
                 mini_x = card_x + card_w - mini_w - 16
                 mini_y = card_y + card_h // 2 - 3
                 clamped = max(-600, min(600, score))
-                ww = int((clamped + 600) / 1200 * mini_w)
+                ww      = int((clamped + 600) / 1200 * mini_w)
                 pygame.draw.rect(screen, C_DIVIDER, (mini_x, mini_y, mini_w, 6), border_radius=3)
                 if ww > 0:
-                    pygame.draw.rect(screen, (200, 196, 186), (mini_x + (mini_w - ww), mini_y, ww, 6), border_radius=3)
+                    pygame.draw.rect(screen, (200, 196, 186),
+                                     (mini_x + (mini_w - ww), mini_y, ww, 6), border_radius=3)
 
                 cy += card_h + 6
+
+            # ── Principal Variation ───────────────────────────────────
+            cy = draw_pv_line(screen, fonts, board, pv_line or [], px, pw, cy)
 
     # Bottom buttons
     btn_h  = 40
@@ -369,25 +437,23 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board, edit_mode, sel
         pygame.draw.rect(screen, bg, (bx, btn_y, bw, btn_h), border_radius=8)
         pygame.draw.rect(screen, bd, (bx, btn_y, bw, btn_h), 1, border_radius=8)
         t = fonts['btn'].render(label, True, C_TEXT)
-        screen.blit(t, (bx + (bw - t.get_width()) // 2, btn_y + (btn_h - t.get_height()) // 2))
+        screen.blit(t, (bx + (bw - t.get_width()) // 2,
+                        btn_y + (btn_h - t.get_height()) // 2))
 
     edit_button_rect = pygame.Rect(bx, btn_y1, bw, btn_h)
     flip_button_rect = pygame.Rect(bx, btn_y2, bw, btn_h)
-
     return flip_button_rect, edit_button_rect, palette_rects
 
+
 def get_promotion_choice(screen):
-    # Render promotion menu overlay
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 180))
     screen.blit(overlay, (0, 0))
-
     font = pygame.font.SysFont("Georgia", 28, bold=True)
     txt  = font.render("Promote:  Q · R · B · N", True, C_GOLD)
     screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2,
                       HEIGHT // 2 - txt.get_height() // 2))
     pygame.display.flip()
-
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
