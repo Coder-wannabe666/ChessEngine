@@ -70,7 +70,6 @@ QUEEN_PST = [
     -20,-10,-10, -5, -5,-10,-10,-20
 ]
 
-# King in the middle game (safe, tucked away)
 KING_PST = [
     -30,-40,-40,-50,-50,-40,-40,-30,
     -30,-40,-40,-50,-50,-40,-40,-30,
@@ -82,7 +81,6 @@ KING_PST = [
      20, 30, 10,  0,  0, 10, 30, 20
 ]
 
-# King in the endgame (active, centralized)
 KING_ENDGAME_PST = [
     -50,-40,-30,-20,-20,-30,-40,-50,
     -30,-20,-10,  0,  0,-10,-20,-30,
@@ -94,53 +92,59 @@ KING_ENDGAME_PST = [
     -50,-30,-30,-30,-30,-30,-30,-50
 ]
 
+# Precomputed table lookup per piece type (middlegame)
+MG_TABLES = {
+    chess.PAWN:   PAWN_PST,
+    chess.KNIGHT: KNIGHT_PST,
+    chess.BISHOP: BISHOP_PST,
+    chess.ROOK:   ROOK_PST,
+    chess.QUEEN:  QUEEN_PST,
+    chess.KING:   KING_PST,
+}
+
+EG_TABLES = {
+    chess.PAWN:   PAWN_ENDGAME_PST,
+    chess.KNIGHT: KNIGHT_PST,
+    chess.BISHOP: BISHOP_PST,
+    chess.ROOK:   ROOK_PST,
+    chess.QUEEN:  QUEEN_PST,
+    chess.KING:   KING_ENDGAME_PST,
+}
+
+PIECE_VALUES = {
+    chess.PAWN:   100,
+    chess.KNIGHT: 320,
+    chess.BISHOP: 330,
+    chess.ROOK:   500,
+    chess.QUEEN:  900,
+    chess.KING:   20000
+}
+
 def is_endgame(board):
     """Checks if the position is an endgame based on the number of pieces."""
     return len(board.piece_map()) <= 10
 
-def get_pst_value(piece_type, square, color, board):
-    """Gets the positional bonus, mapping standard visual arrays correctly."""
-    endgame = is_endgame(board)
-    tables = {
-        chess.PAWN: PAWN_ENDGAME_PST if endgame else PAWN_PST,
-        chess.KNIGHT: KNIGHT_PST,
-        chess.BISHOP: BISHOP_PST,
-        chess.ROOK: ROOK_PST,
-        chess.QUEEN: QUEEN_PST
-    }
-
-    table = tables.get(piece_type)
-
-    if piece_type == chess.KING:
-        table = KING_ENDGAME_PST if is_endgame(board) else KING_PST
-
-    if not table:
-        return 0
-
-    if color == chess.WHITE:
-        square = chess.square_mirror(square)
-
-    return table[square]
-
 def evaluate_board(board):
-    """Returns the pure mathematical evaluation of the position."""
+    """
+    Returns the pure mathematical evaluation of the position.
+    Optimized: piece_map() and is_endgame() called exactly ONCE per eval.
+    """
+    piece_map = board.piece_map()
+    endgame = len(piece_map) <= 10          # is_endgame inlined — avoids second piece_map()
+    tables = EG_TABLES if endgame else MG_TABLES
+
     score = 0
-    piece_values = {
-        chess.PAWN: 100,
-        chess.KNIGHT: 320,
-        chess.BISHOP: 330,
-        chess.ROOK: 500,
-        chess.QUEEN: 900,
-        chess.KING: 20000
-    }
+    for square, piece in piece_map.items():
+        pt = piece.piece_type
+        table = tables[pt]
 
-    for square, piece in board.piece_map().items():
-        val = piece_values.get(piece.piece_type, 0)
-        pst_val = get_pst_value(piece.piece_type, square, piece.color, board)
+        # Mirror square for White (PST defined from White's visual perspective)
+        pst_square = chess.square_mirror(square) if piece.color == chess.WHITE else square
 
+        val = PIECE_VALUES.get(pt, 0) + table[pst_square]
         if piece.color == chess.WHITE:
-            score += val + pst_val
+            score += val
         else:
-            score -= val + pst_val
+            score -= val
 
     return score
