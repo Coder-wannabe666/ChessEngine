@@ -7,7 +7,7 @@ from nn.encoder import board_to_tensor
 from evaluation import evaluate_board as classical_eval, is_endgame
 
 # --- Configuration ---
-DEPTH        = 6            # comfortable at depth 6 with history heuristic
+DEPTH        = 6            # depth 6
 AI_WEIGHT    = 0.2
 AI_MULTIPLIER = 120
 SEARCH_ID    = 0
@@ -84,7 +84,11 @@ def move_value(board, move, current_depth, tt_move=None):
         attacker = board.piece_at(move.from_square)
         v_val = PIECE_VALUES.get(victim.piece_type,   0) if victim   else 0
         a_val = PIECE_VALUES.get(attacker.piece_type, 0) if attacker else 0
-        return 10000 + v_val - a_val
+        mvv_lva = v_val - a_val
+        # Bad captures (losing exchanges) scored below quiet moves
+        if a_val > v_val and board.is_attacked_by(not attacker.color, move.to_square):
+            return -1000 + mvv_lva   # still try but after quiets
+        return 10000 + mvv_lva
 
     if move in KILLER_MOVES[current_depth]:
         return 5000
@@ -96,20 +100,54 @@ def move_value(board, move, current_depth, tt_move=None):
 
     return 0
 
+# ── Simplified SEE (Static Exchange Evaluation) ─────────────────────
+
+def see_sign(board, move):
+    """
+    Returns True if the capture is likely winning or neutral.
+    Fast approximation: compares attacker value with victim value.
+    Losing captures (Qxp defended by p) are ordered after quiet moves.
+    """
+    victim   = board.piece_at(move.to_square)
+    attacker = board.piece_at(move.from_square)
+    if not victim or not attacker:
+        return True  # en passant or edge case — allow
+    v_val = PIECE_VALUES.get(victim.piece_type,   0)
+    a_val = PIECE_VALUES.get(attacker.piece_type, 0)
+    if a_val <= v_val:
+        return True   # equal or winning trade — always good
+    # Attacker is more valuable: only good if destination is undefended
+    return not board.is_attacked_by(not attacker.color, move.to_square)
+
+
 # ── Quiescence search ────────────────────────────────────────────────
 
+# Maximum material gain from any single capture (used for delta pruning)
+DELTA_MARGIN = 200   # safety buffer: allow for positional upside after capture
+
 def quiescence(board, alpha, beta, maximizing, current_depth, q_depth=0):
+    """
+    Quiescence search with delta pruning:
+    Skip captures where even getting the piece for free can't beat alpha.
+    This removes most losing-capture branches without missing anything important.
+    """
     global NODES_COUNT
     NODES_COUNT += 1
 
     stand_pat = fast_eval(board, current_depth)
-    if q_depth >= 6:   # deeper QS = fewer horizon-effect eval jumps
+    if q_depth >= 6:
         return stand_pat
 
     if maximizing:
         if stand_pat >= beta: return beta
         alpha = max(alpha, stand_pat)
         for move in board.generate_legal_captures():
+            # Delta pruning: if even capturing the piece + margin can't beat alpha, skip
+            victim = board.piece_at(move.to_square)
+            if victim:
+                gain = PIECE_VALUES.get(victim.piece_type, 0)
+                if stand_pat + gain + DELTA_MARGIN < alpha:
+                    continue
             board.push(move)
             alpha = max(alpha, quiescence(board, alpha, beta, False, current_depth + 1, q_depth + 1))
             board.pop()
@@ -119,6 +157,11 @@ def quiescence(board, alpha, beta, maximizing, current_depth, q_depth=0):
         if stand_pat <= alpha: return alpha
         beta = min(beta, stand_pat)
         for move in board.generate_legal_captures():
+            victim = board.piece_at(move.to_square)
+            if victim:
+                gain = PIECE_VALUES.get(victim.piece_type, 0)
+                if stand_pat - gain - DELTA_MARGIN > beta:
+                    continue
             board.push(move)
             beta = min(beta, quiescence(board, alpha, beta, True, current_depth + 1, q_depth + 1))
             board.pop()
@@ -127,7 +170,11 @@ def quiescence(board, alpha, beta, maximizing, current_depth, q_depth=0):
 
 # ── Futility margins ─────────────────────────────────────────────────
 
-FUTILITY_MARGIN = {1: 150, 2: 300}
+FUTILITY_MARGIN = {1: 150, 2: 300, 3: 500}   # razoring at depth 3
+
+# Reverse Futility Pruning (static null move): if eval - margin >= beta, prune.
+# Much cheaper than NMP: no board.push needed.
+RFP_MARGIN = {1: 150, 2: 250, 3: 350, 4: 450}
 
 # ── Main Alpha-Beta ──────────────────────────────────────────────────
 
@@ -170,10 +217,28 @@ def minimax(board, depth, alpha, beta, maximizing, current_depth, original_id):
     if depth <= 0 or board.is_game_over():
         return quiescence(board, alpha, beta, maximizing, current_depth)
 
-    in_check = board.is_check()
+    in_check   = board.is_check()
+    static_val = classical_eval(board)   # used by both RFP and futility
 
-    # --- Null Move Pruning ---
-    NULL_R = 2
+    # --- Reverse Futility Pruning (static null move) ---
+    # If static eval is already way above beta, we can prune without searching.
+    # Much cheaper than NMP (no board.push). Very effective at depth 1-4.
+    if (depth in RFP_MARGIN and not in_check):
+        if maximizing     and static_val - RFP_MARGIN[depth] >= beta:  return static_val
+        if not maximizing and static_val + RFP_MARGIN[depth] <= alpha: return static_val
+
+    # --- Internal Iterative Deepening (IID) ---
+    # If we have no TT move at depth >= 4, do a quick shallow pre-search to
+    # populate the TT. The hash move found improves move ordering dramatically.
+    if tt_move is None and depth >= 4:
+        minimax(board, max(1, depth - 3), alpha, beta,
+                maximizing, current_depth, original_id)
+        tt_entry2 = TRANSPOSITION_TABLE.get(board_hash)
+        if tt_entry2:
+            tt_move = tt_entry2[3]
+
+    # --- Null Move Pruning (adaptive R: 3 at depth>=6, 2 otherwise) ---
+    NULL_R = 3 if depth >= 6 else 2
     if depth >= 2 and not in_check and current_depth > 0 and not is_endgame(board):
         board.push(chess.Move.null())
         null_score = minimax(board, depth - 1 - NULL_R, alpha, beta,
@@ -192,42 +257,56 @@ def minimax(board, depth, alpha, beta, maximizing, current_depth, original_id):
     best_val  = -float('inf') if maximizing else float('inf')
     best_move = None   # track locally for TT storage
 
-    # --- Futility Pruning setup ---
-    do_futility = (not in_check and depth in FUTILITY_MARGIN)
-    if do_futility:
-        static_eval    = classical_eval(board)
-        futility_margin = FUTILITY_MARGIN[depth]
+    # --- Futility Pruning setup (reuse static_val already computed above) ---
+    do_futility     = (not in_check and depth in FUTILITY_MARGIN)
+    futility_margin = FUTILITY_MARGIN.get(depth, 0)
+    static_eval     = static_val   # already computed
 
     for move_idx, move in enumerate(legal_moves):
-        is_capture = board.is_capture(move)
-        is_killer  = move in KILLER_MOVES[current_depth]
-        is_promo   = move.promotion is not None
+        is_capture   = board.is_capture(move)
+        is_killer    = move in KILLER_MOVES[current_depth]
+        is_promo     = move.promotion is not None
+        # gives_check: use board method — NO push/pop needed (saves ~2 push/pop per move)
+        gives_check  = board.gives_check(move)
 
         if do_futility and not is_capture and not is_killer and not is_promo:
             if maximizing     and static_eval + futility_margin <= alpha: continue
             if not maximizing and static_eval - futility_margin >= beta:  continue
 
-        board.push(move)
-        gives_check = board.is_check()
-        board.pop()
+        # --- Move Count Based Pruning (late move pruning) ---
+        # At low depths, skip very late quiet moves entirely (not just reduce)
+        if (depth <= 2 and move_idx >= 8
+                and not is_capture and not is_killer and not is_promo
+                and not in_check   and not gives_check):
+            continue
 
-        # --- LMR (log-based formula: deeper search = larger reduction) ---
+        # --- LMR (log-based formula, no separate push/pop needed) ---
         reduction = 0
         if (depth >= 3 and move_idx >= 2
                 and not is_capture and not is_killer and not is_promo
                 and not in_check   and not gives_check):
-            # ln(depth) * ln(move_idx+1) / 1.5  →  depth6/move10 ≈ 2 plies off
             reduction = max(1, int(math.log(depth) * math.log(move_idx + 1) / 1.5))
-            reduction = min(reduction, depth - 1)  # never reduce to 0 or below
+            reduction = min(reduction, depth - 1)
 
         board.push(move)
-        res = minimax(board, depth - 1 - reduction, alpha, beta,
-                      not maximizing, current_depth + 1, original_id)
 
-        if reduction > 0 and (
-                (maximizing and res > alpha) or (not maximizing and res < beta)):
-            res = minimax(board, depth - 1, alpha, beta,
+        # --- PVS (Principal Variation Search) ---
+        # First move: full window. Subsequent moves: null window, re-search if needed.
+        if move_idx == 0:
+            res = minimax(board, depth - 1 - reduction, alpha, beta,
                           not maximizing, current_depth + 1, original_id)
+        else:
+            # Null window search [alpha, alpha+1] or [beta-1, beta]
+            if maximizing:
+                nw_alpha, nw_beta = alpha, alpha + 1
+            else:
+                nw_alpha, nw_beta = beta - 1, beta
+            res = minimax(board, depth - 1 - reduction, nw_alpha, nw_beta,
+                          not maximizing, current_depth + 1, original_id)
+            # Re-search with full window if null window beat alpha (or improved beta)
+            if ((maximizing and res > alpha) or (not maximizing and res < beta)):
+                res = minimax(board, depth - 1, alpha, beta,
+                              not maximizing, current_depth + 1, original_id)
         board.pop()
 
         improved = (maximizing and res > best_val) or (not maximizing and res < best_val)
@@ -240,10 +319,8 @@ def minimax(board, depth, alpha, beta, maximizing, current_depth, original_id):
 
         if beta <= alpha:
             if not is_capture:
-                # Killer moves (2 slots per depth)
                 KILLER_MOVES[current_depth][1] = KILLER_MOVES[current_depth][0]
                 KILLER_MOVES[current_depth][0] = move
-                # History heuristic: reward quiet moves that cause cutoffs
                 piece = board.piece_at(move.from_square)
                 if piece:
                     key = (piece.piece_type, move.to_square)
@@ -256,7 +333,14 @@ def minimax(board, depth, alpha, beta, maximizing, current_depth, original_id):
     elif best_val >= beta:     tt_flag = TT_LOWERBOUND
     else:                      tt_flag = TT_EXACT
 
-    TRANSPOSITION_TABLE[board_hash] = (depth, best_val, tt_flag, best_move)
+    # Cap TT size to ~800k entries to avoid memory bloat slowing down dict lookups
+    if len(TRANSPOSITION_TABLE) < 800_000:
+        TRANSPOSITION_TABLE[board_hash] = (depth, best_val, tt_flag, best_move)
+    elif board_hash in TRANSPOSITION_TABLE:
+        # Always overwrite existing entry if we have a deeper result
+        existing = TRANSPOSITION_TABLE[board_hash]
+        if depth >= existing[0]:
+            TRANSPOSITION_TABLE[board_hash] = (depth, best_val, tt_flag, best_move)
     return best_val
 
 # ── PV reconstruction ────────────────────────────────────────────────
@@ -314,16 +398,15 @@ def get_book_moves(board, count=3, book_path="komodo.bin"):
 
 # ── Main entry point ─────────────────────────────────────────────────
 
-def get_top_moves(board, depth, count=3):
+def get_top_moves(board, depth, count=3, on_depth=None):
     """
     Returns (results, pv_line) where:
       results  = [(score, move), ...] top 'count' moves
       pv_line  = [move, move, ...]   best continuation from root position
 
-    Changes vs previous version:
-      • Aspiration windows in iterative deepening (reduces eval swings)
-      • Hash-move ordering stabilises results across depths
-      • PV line returned alongside top moves
+    on_depth: optional callback(depth, results, pv) called after each iteration.
+    Enables progressive display — GUI can show depth-N results without waiting
+    for the full search to complete.
     """
     global NODES_COUNT, SEARCH_ID, HISTORY, KILLER_MOVES
     SEARCH_ID += 1
@@ -421,6 +504,12 @@ def get_top_moves(board, depth, count=3):
 
         is_book = "book" if results and results[0][2] in book_move_set else ""
         print(f"Depth {d} complete. Nodes: {NODES_COUNT}  Best: {results[0][2].uci() if results else '?'} {is_book}  Score: {results[0][0] if results else '?'}")
+
+        # Progressive display: fire callback after every depth
+        if on_depth and results:
+            _root = results[0][2]
+            _pv   = get_pv_line(board, d, root_move=_root)
+            on_depth(d, [(r[0], r[2]) for r in results[:count]], _pv)
 
     root_move = results[0][2] if results else None
     pv = get_pv_line(board, depth, root_move=root_move)

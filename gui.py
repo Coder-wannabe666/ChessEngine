@@ -261,7 +261,7 @@ def draw_pv_line(screen, fonts, board, pv_line, px, pw, cy):
 
 
 def draw_sidebar(screen, fonts, top_moves, is_calculating, board,
-                 edit_mode, selected_edit_piece, pv_line=None):
+                 edit_mode, selected_edit_piece, pv_line=None, current_depth=0):
     px            = BOARD_AREA
     pw            = PANEL_WIDTH
     palette_rects = {}
@@ -337,7 +337,8 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board,
             screen.blit(warn, (px + 20, cy))
             cy += warn.get_height() + 8
 
-        elif is_calculating:
+        elif is_calculating and not top_moves:
+            # No results yet at all — show spinner only
             calc = fonts['info'].render(f"Searching depth {DEPTH} …", True, C_TEXT_DIM)
             screen.blit(calc, (px + 20, cy))
             cy += calc.get_height() + 8
@@ -366,8 +367,26 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board,
 
             lbl = fonts['tiny'].render("TOP MOVES", True, C_TEXT_DIM)
             screen.blit(lbl, (px + 20, cy))
+            # Depth badge — right-aligned on same row
+            if current_depth > 0:
+                depth_str = f"depth {current_depth}"
+                if is_calculating:
+                    depth_str += "…"
+                d_surf = fonts['tiny'].render(depth_str, True,
+                                              C_GOLD if not is_calculating else C_TEXT_DIM)
+                screen.blit(d_surf, (px + pw - d_surf.get_width() - 20,
+                                     cy + (lbl.get_height() - d_surf.get_height()) // 2))
             cy += lbl.get_height() + 10
 
+            # Small spinner row when results are shown but search still running
+            if is_calculating:
+                ticks  = (pygame.time.get_ticks() // 500) % 4
+                spin   = fonts['tiny'].render(
+                    "  " + "·" * ticks + "  searching…", True, C_TEXT_DIM)
+                screen.blit(spin, (px + 20, cy))
+                cy += spin.get_height() + 6
+
+            move_card_rects = []   # clickable rects, index = move index
             for i, (score, move) in enumerate(top_moves):
                 try:    move_san = board.san(move)
                 except: move_san = move.uci()
@@ -416,6 +435,7 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board,
                     pygame.draw.rect(screen, (200, 196, 186),
                                      (mini_x + (mini_w - ww), mini_y, ww, 6), border_radius=3)
 
+                move_card_rects.append(pygame.Rect(card_x, card_y, card_w, card_h))
                 cy += card_h + 6
 
             # ── Principal Variation ───────────────────────────────────
@@ -442,7 +462,10 @@ def draw_sidebar(screen, fonts, top_moves, is_calculating, board,
 
     edit_button_rect = pygame.Rect(bx, btn_y1, bw, btn_h)
     flip_button_rect = pygame.Rect(bx, btn_y2, bw, btn_h)
-    return flip_button_rect, edit_button_rect, palette_rects
+    try:
+        return flip_button_rect, edit_button_rect, palette_rects, move_card_rects
+    except NameError:
+        return flip_button_rect, edit_button_rect, palette_rects, []
 
 
 def get_promotion_choice(screen):
