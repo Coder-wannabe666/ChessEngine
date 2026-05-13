@@ -251,14 +251,89 @@ def hanging_piece_score(board, piece_map):
     return score
 
 
+# ── Castling & king safety ───────────────────────────────────────────────
+
+# Squares between king and rook that must be empty for castling
+_CASTLE_KINGSIDE_EMPTY  = {chess.WHITE: {chess.F1, chess.G1},
+                            chess.BLACK: {chess.F8, chess.G8}}
+_CASTLE_QUEENSIDE_EMPTY = {chess.WHITE: {chess.B1, chess.C1, chess.D1},
+                            chess.BLACK: {chess.B8, chess.C8, chess.D8}}
+
+# Safe rook squares after castling
+_CASTLED_KING_SQUARES   = {chess.WHITE: {chess.G1, chess.C1},
+                            chess.BLACK: {chess.G8, chess.C8}}
+
+def castling_score(board, piece_map, endgame):
+    """
+    Rewards castling and punishes:
+      • Losing castling rights without having castled (big penalty)
+      • Having the right but not using it while the position is open
+      • King stuck in center blocking its own rook on the back rank
+
+    Only applied in middlegame — in endgame an active king is fine.
+    """
+    if endgame:
+        return 0
+
+    score = 0
+
+    for color in (chess.WHITE, chess.BLACK):
+        sign       = 1 if color == chess.WHITE else -1
+        king_sq    = board.king(color)
+        if king_sq is None:
+            continue
+
+        king_rank  = chess.square_rank(king_sq)
+        king_file  = chess.square_file(king_sq)
+        back_rank  = 0 if color == chess.WHITE else 7
+
+        has_ks = board.has_kingside_castling_rights(color)
+        has_qs = board.has_queenside_castling_rights(color)
+
+        # ── Already castled (king on g- or c-file on back rank)
+        if king_sq in _CASTLED_KING_SQUARES[color]:
+            score += sign * 60   # reward: king is safe
+
+        # ── Still has rights — incentivise using them soon
+        elif has_ks or has_qs:
+            # Small bonus just for having the option (development is on track)
+            score += sign * 15
+
+            # Extra bonus if the path is clear and castling is one move away
+            occupied = set(piece_map.keys())
+            if has_ks and not (_CASTLE_KINGSIDE_EMPTY[color] & occupied):
+                score += sign * 25   # kingside castling available right now
+            if has_qs and not (_CASTLE_QUEENSIDE_EMPTY[color] & occupied):
+                score += sign * 20   # queenside castling available right now
+
+        # ── Lost both rights without castling — king stuck in center
+        else:
+            score -= sign * 50   # significant penalty
+
+        # ── King on e-file (center) on back rank — likely blocking a rook
+        if king_rank == back_rank and king_file == 4:
+            # Check if a rook is actually blocked behind the king
+            for rook_sq, p in piece_map.items():
+                if p.piece_type == chess.ROOK and p.color == color:
+                    if chess.square_rank(rook_sq) == back_rank:
+                        # Rook on same rank, king between it and the corner
+                        rook_file = chess.square_file(rook_sq)
+                        # King at e (file 4) with rook at a/b/f/g/h — being blocked
+                        if rook_file < king_file or rook_file > king_file:
+                            score -= sign * 30   # rook is trapped behind the king
+
+    return score
+
+
 # ── Main evaluation ──────────────────────────────────────────────────────
 
 def evaluate_board(board):
     """
-    Full static evaluation. Three components:
+    Full static evaluation. Four components:
       1. Material + PST       (piece values + positional tables, MG vs EG)
       2. Pawn structure       (passed pawns, isolated, doubled)
       3. Hanging pieces       (undefended or attacked by lower-value enemy)
+      4. Castling / king safety (incentivise castling, penalise blocked rooks)
     """
     piece_map = board.piece_map()
     endgame   = len(piece_map) <= 10
@@ -273,5 +348,6 @@ def evaluate_board(board):
 
     score += pawn_structure_score(piece_map, endgame)
     score += hanging_piece_score(board, piece_map)
+    score += castling_score(board, piece_map, endgame)
 
     return score

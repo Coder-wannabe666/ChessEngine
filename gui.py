@@ -1,6 +1,7 @@
 import pygame
 import chess
 import sys
+from search import DEPTH
 
 # Layout sizes
 BOARD_SIZE  = 512
@@ -11,7 +12,6 @@ WIDTH       = BOARD_AREA + PANEL_WIDTH
 HEIGHT      = BOARD_AREA
 DIMENSION   = 8
 SQ_SIZE     = BOARD_SIZE // DIMENSION
-DEPTH       = 5
 
 # Colors
 C_BG         = ( 10,  10,  17)

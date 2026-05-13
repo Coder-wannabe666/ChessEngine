@@ -2,7 +2,7 @@ import pygame
 import chess
 import sys
 import concurrent.futures
-from search import get_top_moves
+from search import get_top_moves, DEPTH
 import gui
 
 def main():
@@ -184,7 +184,7 @@ def main():
                 and not board.is_game_over() and not edit_mode):
             if board.is_valid():
                 last_eval_fen  = board.fen()
-                future         = executor.submit(get_top_moves, board.copy(), gui.DEPTH, 3)
+                future         = executor.submit(get_top_moves, board.copy(), DEPTH, 3)
                 is_calculating = True
                 needs_eval     = False
             else:

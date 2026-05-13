@@ -1,4 +1,5 @@
 import chess
+import math
 import chess.polyglot
 import torch
 from nn.model import ChessNet
@@ -6,12 +7,12 @@ from nn.encoder import board_to_tensor
 from evaluation import evaluate_board as classical_eval, is_endgame
 
 # --- Configuration ---
-DEPTH        = 5
+DEPTH        = 6            # comfortable at depth 6 with history heuristic
 AI_WEIGHT    = 0.2
 AI_MULTIPLIER = 120
 SEARCH_ID    = 0
 
-ASPIRATION_WINDOW = 50   # centipawns; widen to full window on fail
+ASPIRATION_WINDOW = 40   # tighter window → more stable eval between positions
 
 # --- TT flag constants ---
 TT_EXACT      = 0
@@ -20,11 +21,15 @@ TT_UPPERBOUND = 2
 
 # --- Caches & Counters ---
 # TT entry: (depth, score, flag, best_move)
-# Storing best_move enables hash-move ordering and PV reconstruction.
 TRANSPOSITION_TABLE = {}
 KILLER_MOVES = [[None] * 2 for _ in range(64)]
 NODES_COUNT  = 0
 AI_CACHE     = {}
+
+# History heuristic: (piece_type, to_square) → score
+# Quiet moves that cause beta-cutoffs gain score → better ordering → more cutoffs
+HISTORY      = {}
+HISTORY_MAX  = 8000   # cap to avoid overflow relative to killer (5000)
 
 PIECE_VALUES = {
     chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
@@ -65,13 +70,14 @@ def fast_eval(board, current_depth):
 def move_value(board, move, current_depth, tt_move=None):
     """
     Move ordering priority:
-      1. Hash move (from TT)       — most likely best move, huge stability gain
-      2. Captures (MVV-LVA)
-      3. Killer moves
-      4. Quiet moves
+      1. Hash move (from TT)  30000   — best move from previous search
+      2. Captures (MVV-LVA)   10000+  — good captures first
+      3. Killer moves          5000   — quiet moves that caused cutoffs
+      4. History heuristic    0–3999  — quiet moves ordered by past success
+      5. Other quiet moves       0
     """
     if move == tt_move:
-        return 30000   # above all other moves
+        return 30000
 
     if board.is_capture(move):
         victim   = board.piece_at(move.to_square)
@@ -83,6 +89,11 @@ def move_value(board, move, current_depth, tt_move=None):
     if move in KILLER_MOVES[current_depth]:
         return 5000
 
+    # History heuristic for quiet moves
+    piece = board.piece_at(move.from_square)
+    if piece:
+        return HISTORY.get((piece.piece_type, move.to_square), 0)
+
     return 0
 
 # ── Quiescence search ────────────────────────────────────────────────
@@ -92,7 +103,7 @@ def quiescence(board, alpha, beta, maximizing, current_depth, q_depth=0):
     NODES_COUNT += 1
 
     stand_pat = fast_eval(board, current_depth)
-    if q_depth >= 4:
+    if q_depth >= 6:   # deeper QS = fewer horizon-effect eval jumps
         return stand_pat
 
     if maximizing:
@@ -200,12 +211,14 @@ def minimax(board, depth, alpha, beta, maximizing, current_depth, original_id):
         gives_check = board.is_check()
         board.pop()
 
-        # --- LMR ---
+        # --- LMR (log-based formula: deeper search = larger reduction) ---
         reduction = 0
-        if (depth >= 3 and move_idx >= 3
+        if (depth >= 3 and move_idx >= 2
                 and not is_capture and not is_killer and not is_promo
                 and not in_check   and not gives_check):
-            reduction = 1 if move_idx < 6 else 2
+            # ln(depth) * ln(move_idx+1) / 1.5  →  depth6/move10 ≈ 2 plies off
+            reduction = max(1, int(math.log(depth) * math.log(move_idx + 1) / 1.5))
+            reduction = min(reduction, depth - 1)  # never reduce to 0 or below
 
         board.push(move)
         res = minimax(board, depth - 1 - reduction, alpha, beta,
@@ -227,8 +240,15 @@ def minimax(board, depth, alpha, beta, maximizing, current_depth, original_id):
 
         if beta <= alpha:
             if not is_capture:
+                # Killer moves (2 slots per depth)
                 KILLER_MOVES[current_depth][1] = KILLER_MOVES[current_depth][0]
                 KILLER_MOVES[current_depth][0] = move
+                # History heuristic: reward quiet moves that cause cutoffs
+                piece = board.piece_at(move.from_square)
+                if piece:
+                    key = (piece.piece_type, move.to_square)
+                    HISTORY[key] = min(HISTORY_MAX,
+                                       HISTORY.get(key, 0) + depth * depth)
             break
 
     # --- Store TT with best_move ---
@@ -241,19 +261,25 @@ def minimax(board, depth, alpha, beta, maximizing, current_depth, original_id):
 
 # ── PV reconstruction ────────────────────────────────────────────────
 
-def get_pv_line(board, max_depth):
+def get_pv_line(board, max_depth, root_move=None):
     """
-    Reconstructs the Principal Variation by following the best_move
-    stored in TT at each position. Returns a list of chess.Move objects.
+    Reconstructs the Principal Variation by following best_move entries in TT.
 
-    Call this AFTER get_top_moves completes (TT is populated).
-    Works on a copy of the board — does not mutate the caller's board.
+    root_move: if provided, forced as the first step regardless of TT root entry.
+    This is necessary when the top move was chosen after blending AI scores —
+    the TT root entry may point to a different (pure-minimax) best move, causing
+    the displayed line to start with a different move than TOP MOVES shows.
     """
-    pv    = []
-    temp  = board.copy()
-    seen  = set()
+    pv   = []
+    temp = board.copy()
+    seen = set()
 
-    for _ in range(max_depth * 2):   # *2 to capture both sides of the line
+    # Force the blended best move as step 1
+    if root_move is not None and root_move in temp.legal_moves:
+        pv.append(root_move)
+        temp.push(root_move)
+
+    for _ in range(max_depth * 2):
         h = chess.polyglot.zobrist_hash(temp)
         if h in seen:
             break
@@ -299,32 +325,36 @@ def get_top_moves(board, depth, count=3):
       • Hash-move ordering stabilises results across depths
       • PV line returned alongside top moves
     """
-    global NODES_COUNT, SEARCH_ID
+    global NODES_COUNT, SEARCH_ID, HISTORY, KILLER_MOVES
     SEARCH_ID += 1
     current_id = SEARCH_ID
     NODES_COUNT = 0
+    # Age history: halve all scores each search to keep recent info more relevant
+    for k in HISTORY:
+        HISTORY[k] >>= 1
+    # Reset killer moves for clean ordering each search
+    KILLER_MOVES = [[None] * 2 for _ in range(64)]
 
-    # 1. Opening Book
-    book_moves = get_book_moves(board, count)
-    if book_moves:
-        results = []
-        is_max  = board.turn == chess.WHITE
-        for i, move in enumerate(book_moves):
-            board.push(move)
-            static_score = classical_eval(board)
-            board.pop()
-            bonus      = (3 - i) * 0.05
-            final_score = static_score + bonus if is_max else static_score - bonus
-            results.append((final_score, move))
-        results.sort(key=lambda x: x[0], reverse=is_max)
-        pv = get_pv_line(board, depth)
-        return results, pv
+    # 1. Opening Book — collect as a set for bonus lookup.
+    #    Full minimax always runs: book moves just get a bonus so they
+    #    bubble to the top while still having correct scores and a full PV.
+    book_move_set = set(get_book_moves(board, count=6))
+    BOOK_BONUS    = 30   # centipawns added to book moves in final blend
 
     # 2. Iterative Deepening + Aspiration Windows
     is_max      = board.turn == chess.WHITE
     legal_moves = list(board.legal_moves)
     results     = []
-    prev_score  = None   # track best score from previous iteration
+
+    # Seed aspiration window from TT (reduces horizon jumps when user plays a move).
+    # If the position was already evaluated in a previous search, use that score
+    # as the center of the aspiration window from iteration 1.
+    _init_hash = chess.polyglot.zobrist_hash(board)
+    _tt_init   = TRANSPOSITION_TABLE.get(_init_hash)
+    if _tt_init and _tt_init[2] == TT_EXACT:
+        prev_score = _tt_init[1]
+    else:
+        prev_score = None
 
     # AI intuition at root (called once per move, not recursively)
     ai_evals = {}
@@ -343,8 +373,8 @@ def get_top_moves(board, depth, count=3):
             asp_beta  = prev_score + ASPIRATION_WINDOW
             use_asp   = True
 
-        results     = []
-        failed_asp  = False
+        results    = []
+        failed_asp = False
 
         sorted_root = sorted(legal_moves,
                              key=lambda m: move_value(board, m, 0),
@@ -361,9 +391,13 @@ def get_top_moves(board, depth, count=3):
                 failed_asp = True
                 break
 
-            ai_score  = ai_evals[move]
-            final_val = (val * (1 - AI_WEIGHT)) + (ai_score * AI_WEIGHT)
-            results.append((final_val, move))
+            # display_score = pure minimax (what GUI shows — consistent with next position)
+            # order_score   = blended + book bonus (used only for sorting)
+            ai_score    = ai_evals[move]
+            book_bonus  = BOOK_BONUS if move in book_move_set else 0
+            order_score = (val * (1 - AI_WEIGHT)) + (ai_score * AI_WEIGHT)
+            order_score += book_bonus if is_max else -book_bonus
+            results.append((val, order_score, move))
 
         if failed_asp:
             # Widen to full window and redo entire depth
@@ -373,17 +407,22 @@ def get_top_moves(board, depth, count=3):
                 val = minimax(board, d - 1, -float('inf'), float('inf'),
                               not is_max, 1, current_id)
                 board.pop()
-                ai_score  = ai_evals[move]
-                final_val = (val * (1 - AI_WEIGHT)) + (ai_score * AI_WEIGHT)
-                results.append((final_val, move))
+                ai_score    = ai_evals[move]
+                book_bonus  = BOOK_BONUS if move in book_move_set else 0
+                order_score = (val * (1 - AI_WEIGHT)) + (ai_score * AI_WEIGHT)
+                order_score += book_bonus if is_max else -book_bonus
+                results.append((val, order_score, move))
 
-        results.sort(key=lambda x: x[0], reverse=is_max)
-        legal_moves = [r[1] for r in results]  # re-order for next iteration
+        results.sort(key=lambda x: x[1], reverse=is_max)   # sort by order_score
+        legal_moves = [r[2] for r in results]               # re-order for next iter
 
         if results:
-            prev_score = int(results[0][0])
+            prev_score = int(results[0][0])  # track pure minimax for aspiration window
 
-        print(f"Depth {d} complete. Nodes: {NODES_COUNT}  Best: {results[0][1].uci() if results else '?'}  Score: {prev_score}")
+        is_book = "book" if results and results[0][2] in book_move_set else ""
+        print(f"Depth {d} complete. Nodes: {NODES_COUNT}  Best: {results[0][2].uci() if results else '?'} {is_book}  Score: {results[0][0] if results else '?'}")
 
-    pv = get_pv_line(board, depth)
-    return results[:count], pv
+    root_move = results[0][2] if results else None
+    pv = get_pv_line(board, depth, root_move=root_move)
+    # Return (display_score, move) — strip internal order_score before returning
+    return [(r[0], r[2]) for r in results[:count]], pv
