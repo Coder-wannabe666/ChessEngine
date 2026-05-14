@@ -129,11 +129,7 @@ def is_endgame(board):
 # ── Pawn structure ──────────────────────────────────────────────────────
 
 def _is_passed_pawn(piece_map, square, color):
-    """
-    Returns True if this pawn has no enemy pawns blocking it (or on
-    adjacent files ahead) on its way to promotion.
-    Operates on the pre-built piece_map to avoid redundant calls.
-    """
+    # Check if pawn is passed.
     file  = chess.square_file(square)
     rank  = chess.square_rank(square)
     enemy = not color
@@ -154,13 +150,7 @@ def _is_passed_pawn(piece_map, square, color):
 
 
 def pawn_structure_score(piece_map, endgame):
-    """
-    Evaluates:
-      • Passed pawn bonuses  (much larger in endgame)
-      • Isolated pawn penalty
-      • Doubled pawn penalty
-    Score is from White's perspective (positive = White better).
-    """
+    # Eval passed, isolated, doubled pawns.
     score = 0
 
     white_pawns, black_pawns = [], []
@@ -207,20 +197,13 @@ def pawn_structure_score(piece_map, endgame):
 # ── Hanging / loose piece detection ─────────────────────────────────────
 
 def hanging_piece_score(board, piece_map):
-    """
-    Penalises pieces that are:
-      (a) attacked by a lower-value enemy piece — whether defended or not
-      (b) attacked by ANY enemy piece AND completely undefended
-
-    Uses python-chess bitboard methods (O(1) per square).
-    This catches most pins and loose-piece blunders without a full SEE.
-    """
+    # Penalize hanging pieces.
     score = 0
 
     for square, piece in piece_map.items():
         pt = piece.piece_type
         if pt in (chess.KING, chess.PAWN):
-            continue  # king safety → PST; pawns → structure function
+            continue
 
         enemy     = not piece.color
         piece_val = PIECE_VALUES[pt]
@@ -228,7 +211,6 @@ def hanging_piece_score(board, piece_map):
         if not board.is_attacked_by(enemy, square):
             continue
 
-        # Cheapest attacker value
         attacker_sqs = board.attackers(enemy, square)
         min_atk_val  = min(
             PIECE_VALUES.get(board.piece_at(sq).piece_type, 0)
@@ -238,10 +220,8 @@ def hanging_piece_score(board, piece_map):
         defended = board.is_attacked_by(piece.color, square)
 
         if min_atk_val < piece_val:
-            # Attacked by a cheaper piece — always bad
             penalty = (piece_val - min_atk_val) if not defended else (piece_val - min_atk_val) // 3
         elif not defended:
-            # Attacked by equal/higher value but completely undefended
             penalty = piece_val // 8
         else:
             continue
@@ -253,25 +233,16 @@ def hanging_piece_score(board, piece_map):
 
 # ── Castling & king safety ───────────────────────────────────────────────
 
-# Squares between king and rook that must be empty for castling
 _CASTLE_KINGSIDE_EMPTY  = {chess.WHITE: {chess.F1, chess.G1},
                             chess.BLACK: {chess.F8, chess.G8}}
 _CASTLE_QUEENSIDE_EMPTY = {chess.WHITE: {chess.B1, chess.C1, chess.D1},
                             chess.BLACK: {chess.B8, chess.C8, chess.D8}}
 
-# Safe rook squares after castling
 _CASTLED_KING_SQUARES   = {chess.WHITE: {chess.G1, chess.C1},
                             chess.BLACK: {chess.G8, chess.C8}}
 
 def castling_score(board, piece_map, endgame):
-    """
-    Rewards castling and punishes:
-      • Losing castling rights without having castled (big penalty)
-      • Having the right but not using it while the position is open
-      • King stuck in center blocking its own rook on the back rank
-
-    Only applied in middlegame — in endgame an active king is fine.
-    """
+    # Reward castling, penalize lost rights.
     if endgame:
         return 0
 
@@ -290,37 +261,25 @@ def castling_score(board, piece_map, endgame):
         has_ks = board.has_kingside_castling_rights(color)
         has_qs = board.has_queenside_castling_rights(color)
 
-        # ── Already castled (king on g- or c-file on back rank)
         if king_sq in _CASTLED_KING_SQUARES[color]:
-            score += sign * 60   # reward: king is safe
-
-        # ── Still has rights — incentivise using them soon
+            score += sign * 60
         elif has_ks or has_qs:
-            # Small bonus just for having the option (development is on track)
             score += sign * 15
-
-            # Extra bonus if the path is clear and castling is one move away
             occupied = set(piece_map.keys())
             if has_ks and not (_CASTLE_KINGSIDE_EMPTY[color] & occupied):
-                score += sign * 25   # kingside castling available right now
+                score += sign * 25
             if has_qs and not (_CASTLE_QUEENSIDE_EMPTY[color] & occupied):
-                score += sign * 20   # queenside castling available right now
-
-        # ── Lost both rights without castling — king stuck in center
+                score += sign * 20
         else:
-            score -= sign * 50   # significant penalty
+            score -= sign * 50
 
-        # ── King on e-file (center) on back rank — likely blocking a rook
         if king_rank == back_rank and king_file == 4:
-            # Check if a rook is actually blocked behind the king
             for rook_sq, p in piece_map.items():
                 if p.piece_type == chess.ROOK and p.color == color:
                     if chess.square_rank(rook_sq) == back_rank:
-                        # Rook on same rank, king between it and the corner
                         rook_file = chess.square_file(rook_sq)
-                        # King at e (file 4) with rook at a/b/f/g/h — being blocked
                         if rook_file < king_file or rook_file > king_file:
-                            score -= sign * 30   # rook is trapped behind the king
+                            score -= sign * 30
 
     return score
 
@@ -328,13 +287,7 @@ def castling_score(board, piece_map, endgame):
 # ── Main evaluation ──────────────────────────────────────────────────────
 
 def evaluate_board(board):
-    """
-    Full static evaluation. Four components:
-      1. Material + PST       (piece values + positional tables, MG vs EG)
-      2. Pawn structure       (passed pawns, isolated, doubled)
-      3. Hanging pieces       (undefended or attacked by lower-value enemy)
-      4. Castling / king safety (incentivise castling, penalise blocked rooks)
-    """
+    # Full static eval.
     piece_map = board.piece_map()
     endgame   = len(piece_map) <= 10
     tables    = EG_TABLES if endgame else MG_TABLES
@@ -350,4 +303,16 @@ def evaluate_board(board):
     score += hanging_piece_score(board, piece_map)
     score += castling_score(board, piece_map, endgame)
 
+    return score
+
+def fast_material_pst_eval(board, piece_map):
+    # Quick eval for Q-search and pruning.
+    endgame = len(piece_map) <= 10
+    tables = EG_TABLES if endgame else MG_TABLES
+    score = 0
+    for square, piece in piece_map.items():
+        pt = piece.piece_type
+        pst_sq = chess.square_mirror(square) if piece.color == chess.WHITE else square
+        val = PIECE_VALUES.get(pt, 0) + tables[pt][pst_sq]
+        score += val if piece.color == chess.WHITE else -val
     return score
